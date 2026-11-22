@@ -25,6 +25,12 @@ class ProbeError(Exception):
     pass
 
 
+class NativeHTTPError(ProbeError):
+    def __init__(self, label, status):
+        super().__init__(f"{label}: HTTP {status}")
+        self.status = status
+
+
 class MediaPending(ProbeError):
     def __init__(self, asset_id):
         super().__init__("sticker media pending")
@@ -66,7 +72,7 @@ def event_candidates(frame, thread):
 async def get_json(client, url, label, **kwargs):
     async with client.get(url, allow_redirects=False, **kwargs) as response:
         if response.status != 200:
-            raise ProbeError(f"{label}: HTTP {response.status}")
+            raise NativeHTTPError(label, response.status)
         data = await bounded_read(response, MAX_EVENT_BYTES)
         result = json.loads(data)
         if not isinstance(result, dict):
@@ -94,7 +100,10 @@ async def stream_events(response):
                 value = json.loads(b"\n".join(data))
                 if not isinstance(value, dict):
                     raise ProbeError("invalid SSE payload")
-                if "error" in value:
+                error = value.get("error")
+                if isinstance(error, dict):
+                    if error.get("code") == "event_cursor_expired":
+                        raise NativeHTTPError("event stream", 410)
                     raise ProbeError("Native emitted an SSE error")
                 yield value
             data.clear()

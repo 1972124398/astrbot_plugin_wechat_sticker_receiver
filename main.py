@@ -1,25 +1,57 @@
-"""AstrBot request hook for opt-in, one-turn WeChat sticker context."""
+"""Convert genuine inbound WeChat stickers into AstrBot image components."""
 
 import asyncio
-import base64
-from collections import OrderedDict
+from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 from functools import partial
-import time
 from pathlib import Path
+import time
 from urllib.parse import quote
 
 import aiohttp
-from PIL import Image
+from PIL import Image as PillowImage
 
 from astrbot.api import logger
-from astrbot.api.event import filter
+from astrbot.api.message_components import Image, Plain
+from astrbot.api.platform import AstrBotMessage, MessageMember, MessageType
 from astrbot.api.star import Star
-from astrbot.core.agent.message import ImageURLPart
 
-from .association import matches_session, message_time, previous_sticker
-from .probe_native import MediaPending, ProbeError, endpoint, get_json, inspect_media
+from .native_events import cursor_number, latest_cursor, private_session, sticker_timestamp
+from .probe_native import (
+    MediaPending,
+    NativeHTTPError,
+    ProbeError,
+    endpoint,
+    event_candidates,
+    get_json,
+    inspect_media,
+    stream_events,
+)
 from .render_sticker import render
+
+
+RECENT_EVENT_SECONDS = 120
+QUEUE_SIZE = 16
+STICKER_CONTEXT = "（微信表情包，用来传达聊天里的语气或情绪。请结合上下文自然接话，避免复述画面。）"
+
+
+def image_message(raw, account, own_username, timestamp, picture):
+    message = AstrBotMessage()
+    message.type = MessageType.FRIEND_MESSAGE
+    message.self_id = own_username
+    message.session_id = private_session(account, raw["threadId"])
+    message.message_id = raw["id"]
+    message.sender = MessageMember(user_id=raw["senderId"], nickname=raw["senderId"])
+    note = STICKER_CONTEXT
+    if picture.preview:
+        note += "（附图为静态预览。）"
+    elif picture.sample_count > 1:
+        note += "（附图为同一动图的顺序取样。）"
+    message.message_str = note
+    message.message = [Plain(note), Image.fromBytes(picture.png)]
+    message.raw_message = raw
+    message.timestamp = timestamp
+    return message
 
 
 class WeChatStickerReceiver(Star):
@@ -28,182 +60,177 @@ class WeChatStickerReceiver(Star):
         self.config = config
         self.client = None
         self.decoder = None
-        self.pending = set()
-        self.claims = OrderedDict()
+        self.tasks = ()
+        self.queue = asyncio.Queue(maxsize=QUEUE_SIZE)
+        self.seen = deque(maxlen=512)
 
     async def initialize(self):
         self.account = self.config.get("account_id", "").strip()
         self.platform = self.config.get("platform_id", "").strip()
         self.peers = frozenset(self.config.get("private_peers", []))
-        self.groups = frozenset(self.config.get("groups", []))
-        self.ttl = max(10, min(600, self.config.get("ttl_seconds", 120)))
-        self.wait = max(100, min(3000, self.config.get("wait_ms", 1400))) / 1000
-        path = Path(self.config.get("token_file", ""))
-        if not self.account or not self.platform or not (self.peers or self.groups):
-            logger.info("WeChat sticker receiver is waiting for an account and conversation allowlist")
+        self.wait = max(300, min(10000, self.config.get("wait_ms", 4500))) / 1000
+        if not self.account or not self.platform or not self.peers:
+            logger.info("WeChat sticker receiver is waiting for an account and private conversation allowlist")
             return
         try:
             self.base = endpoint(self.config.get("native_origin", "http://127.0.0.1:6174"), self.account)
+            path = Path(self.config.get("token_file", ""))
             if not path.is_absolute():
                 raise ValueError("expected an absolute token file path")
             token = path.read_text(encoding="utf-8-sig").strip()
             if not token or not all(33 <= ord(char) <= 126 for char in token):
                 raise ValueError("invalid token file")
-        except (OSError, ValueError, ProbeError) as exc:
-            logger.warning("WeChat sticker receiver configuration rejected (%s)", type(exc).__name__)
+        except (OSError, ValueError, ProbeError) as error:
+            logger.warning("WeChat sticker receiver configuration rejected (%s)", type(error).__name__)
             return
         self.client = aiohttp.ClientSession(
             headers={"Authorization": "Bearer " + token},
-            timeout=aiohttp.ClientTimeout(total=self.wait),
+            timeout=aiohttp.ClientTimeout(total=5),
             connector=aiohttp.TCPConnector(limit=4),
             trust_env=False,
             auto_decompress=False,
         )
-        self.decoder = ThreadPoolExecutor(max_workers=2, thread_name_prefix="wechat-sticker")
-        logger.info("WeChat sticker receiver ready")
+        self.decoder = ThreadPoolExecutor(max_workers=1, thread_name_prefix="wechat-sticker")
+        self.tasks = (asyncio.create_task(self.listen()), asyncio.create_task(self.convert_messages()))
 
     async def terminate(self):
-        client, self.client = self.client, None
-        tasks = tuple(self.pending)
-        for task in tasks:
+        for task in self.tasks:
             task.cancel()
-        if tasks:
-            await asyncio.gather(*tasks, return_exceptions=True)
-        if client is not None:
-            await client.close()
+        if self.tasks:
+            await asyncio.gather(*self.tasks, return_exceptions=True)
+        self.tasks = ()
+        if self.client is not None:
+            await self.client.close()
+            self.client = None
         if self.decoder is not None:
             await asyncio.to_thread(self.decoder.shutdown, cancel_futures=True)
             self.decoder = None
-        self.claims.clear()
 
-    def current_native_message(self, event, request):
+    async def listen(self):
+        cursor = None
+        delay = 1
+        client = self.client
+        stream_timeout = aiohttp.ClientTimeout(total=None, sock_connect=5, sock_read=25)
+        while True:
+            try:
+                if cursor is None:
+                    cursor = await latest_cursor(client, self.base)
+                async with client.get(
+                    self.base + "/events/stream",
+                    params={"after": str(cursor)},
+                    headers={"Accept": "text/event-stream"},
+                    timeout=stream_timeout,
+                    allow_redirects=False,
+                ) as response:
+                    if response.status != 200 or response.content_type != "text/event-stream":
+                        raise NativeHTTPError("event stream", response.status)
+                    logger.info("WeChat sticker receiver listening on its own Native event stream")
+                    delay = 1
+                    async for frame in stream_events(response):
+                        current = cursor_number(frame.get("cursor"))
+                        if current <= cursor:
+                            continue
+                        data = frame.get("data")
+                        if isinstance(data, dict):
+                            thread = data.get("threadId")
+                            if isinstance(thread, str) and thread in self.peers:
+                                message_id = event_candidates(frame, thread)
+                                if message_id is not None:
+                                    try:
+                                        self.queue.put_nowait((thread, message_id))
+                                    except asyncio.QueueFull:
+                                        logger.info("WeChat sticker receiver skipped an event while its queue was full")
+                        cursor = current
+            except NativeHTTPError as error:
+                if error.status == 410:
+                    cursor = None
+                logger.warning("WeChat sticker receiver disconnected (%s)", error)
+            except (aiohttp.ClientError, OSError, ProbeError, ValueError) as error:
+                logger.warning("WeChat sticker receiver disconnected (%s)", type(error).__name__)
+            await asyncio.sleep(delay)
+            delay = min(delay * 2, 30)
+
+    def eligible_adapter(self, thread, sender):
+        adapter = self.context.get_platform_inst(self.platform)
+        if adapter is None or adapter.meta().name != "wechat_native" or getattr(adapter, "stopped", True):
+            return None
+        config = getattr(adapter, "native_config", None)
+        guard = getattr(adapter, "loop_guard", None)
         if (
-            event.get_platform_name() != "wechat_native"
-            or event.get_platform_id() != self.platform
-            or request.image_urls
-            or request.audio_urls
-            or any(
-                (part.get("type") if isinstance(part, dict) else getattr(part, "type", None))
-                == "image_url"
-                for part in request.extra_user_content_parts
-            )
-            or event.get_extra("wechat_sticker_receiver_attached") is request
+            config is None or config.account_id != self.account
+            or not config.enable_private_reply or not config.enable_media
+            or thread.endswith("@chatroom") or thread != sender
+            or (config.allowed_users and sender not in config.allowed_users)
+            or not getattr(adapter, "bot_self_id", None) or sender == adapter.bot_self_id
+            or guard is None or guard.blocked(thread)
         ):
             return None
-        raw = event.message_obj.raw_message
-        if not isinstance(raw, dict):
-            return None
-        thread, sender = raw.get("threadId"), raw.get("senderId")
-        stamp = message_time(raw)
-        if (
-            not isinstance(thread, str) or not thread
-            or not isinstance(sender, str) or not sender
-            or not isinstance(raw.get("id"), str) or not raw["id"]
-            or raw["id"] != event.message_obj.message_id
-            or raw.get("accountId") != self.account
-            or raw.get("direction") != "incoming"
-            or raw.get("type") != 1
-            or raw.get("recall") is not None
-            or stamp is None
-            or not -30 <= time.time() - stamp <= self.ttl
-            or sender != event.get_sender_id()
-            or sender == event.get_self_id()
-            or not matches_session(event.get_session_id(), self.account, thread, sender)
-        ):
-            return None
-        if thread.endswith("@chatroom"):
-            return raw if event.get_group_id() == thread and thread in self.groups else None
-        return raw if not event.get_group_id() and thread == sender and sender in self.peers else None
+        return adapter
 
-    async def load_visual(self, client, message):
-        thread = self.base + "/threads/" + quote(message["threadId"], safe="")
-        page = await get_json(client, thread + "/messages", "thread messages", params={"limit": 32})
-        items = page.get("items")
-        if not isinstance(items, list):
-            raise ProbeError("invalid thread message list")
-        sticker_id = previous_sticker(items, message, self.ttl)
-        if sticker_id is None:
-            return None
-        logger.info("WeChat sticker receiver matched a recent message")
-        url = self.base + "/messages/" + quote(sticker_id, safe="")
+    async def download(self, url, message_id):
         transfer_requested = False
         while True:
             try:
-                blob, preview = await inspect_media(
-                    client, self.base, url, self.account, sticker_id, report=False
-                )
-                break
+                return await inspect_media(self.client, self.base, url, self.account, message_id, report=False)
             except MediaPending as error:
                 if not transfer_requested:
-                    async with client.post(
+                    async with self.client.post(
                         url + "/media-transfers",
-                        json={"messageId": sticker_id, "assetId": error.asset_id, "quality": "best"},
+                        json={"messageId": message_id, "assetId": error.asset_id, "quality": "best"},
                         allow_redirects=False,
                     ) as response:
                         if response.status != 202:
-                            raise ProbeError(f"media transfer: HTTP {response.status}") from None
+                            raise NativeHTTPError("media transfer", response.status) from None
                     transfer_requested = True
                 await asyncio.sleep(0.2)
+
+    async def convert_message(self, thread, message_id):
+        if message_id in self.seen or self.eligible_adapter(thread, thread) is None:
+            return
+        url = self.base + "/messages/" + quote(message_id, safe="")
+        raw = await get_json(self.client, url, "Native message")
+        timestamp = sticker_timestamp(raw)
+        if (
+            timestamp is None or not -30 <= time.time() - timestamp <= RECENT_EVENT_SECONDS
+            or raw.get("accountId") != self.account or raw.get("threadId") != thread
+            or raw.get("senderId") != thread or raw.get("id") != message_id
+            or raw.get("direction") != "incoming" or raw.get("recall") is not None
+        ):
+            return
+        logger.info("WeChat sticker receiver got an inbound sticker")
+        blob, preview = await self.download(url, message_id)
         picture = await asyncio.get_running_loop().run_in_executor(
             self.decoder, partial(render, blob, preview=preview)
         )
-        return sticker_id, picture
-
-    @filter.on_llm_request()
-    async def add_sticker_image(self, event, request):
-        client = self.client
-        if client is None or len(self.pending) >= 4:
+        current = await get_json(self.client, url, "sticker validity")
+        adapter = self.eligible_adapter(thread, thread)
+        identity_fields = ("accountId", "threadId", "senderId", "id", "serverId", "direction", "type", "appMessageType")
+        if (
+            adapter is None or current.get("recall") is not None
+            or any(current.get(field) != raw.get(field) for field in identity_fields)
+        ):
             return
-        message = self.current_native_message(event, request)
-        if message is None:
-            return
+        message = image_message(raw, self.account, adapter.bot_self_id, timestamp, picture)
         try:
-            provider = await self.context.get_using_provider_async(event.unified_msg_origin)
-        except (LookupError, ValueError):
+            adapter.commit_event(adapter.create_event(message))
+        except asyncio.QueueFull:
+            logger.info("WeChat sticker receiver skipped delivery while the AstrBot queue was full")
             return
-        if provider is None or "image" not in provider.provider_config.get("modalities", []):
-            return
-        task = asyncio.create_task(self.load_visual(client, message))
-        self.pending.add(task)
-        try:
-            result = await asyncio.wait_for(task, self.wait)
-        except ProbeError as exc:
-            logger.info("WeChat sticker receiver skipped unavailable media (%s)", exc)
-            return
-        except (OSError, ValueError, aiohttp.ClientError, Image.DecompressionBombError) as exc:
-            logger.info("WeChat sticker receiver skipped unavailable media (%s)", type(exc).__name__)
-            return
-        except asyncio.CancelledError:
-            if self.client is not None:
-                raise
-            return
-        finally:
-            self.pending.discard(task)
-        if result is None or self.client is not client:
-            return
-        sticker_id, picture = result
-        now = time.monotonic()
-        while self.claims and next(iter(self.claims.values()))[1] <= now:
-            self.claims.popitem(last=False)
-        claim = self.claims.get(sticker_id)
-        if claim is not None and claim[0] != message["id"]:
-            return
-        self.claims.pop(sticker_id, None)
-        self.claims[sticker_id] = (message["id"], now + self.ttl)
-        if len(self.claims) > 256:
-            self.claims.popitem(last=False)
-        encoded = base64.b64encode(picture.png).decode("ascii")
-        image = ImageURLPart(image_url=ImageURLPart.ImageURL(url="data:image/png;base64," + encoded))
-        request.extra_user_content_parts.append(image.mark_as_temp())
-        event.set_extra("wechat_sticker_receiver_attached", request)
+        self.seen.append(message_id)
         logger.info(
-            "WeChat sticker receiver attached image frames=%s preview=%s bounded=%s",
-            picture.sample_count,
-            picture.preview,
-            picture.limited,
+            "WeChat sticker receiver delivered a sticker image with context frames=%s preview=%s bounded=%s",
+            picture.sample_count, picture.preview, picture.limited,
         )
 
-    @filter.on_llm_response()
-    async def observe_sticker_turn(self, event, response):
-        if event.get_extra("wechat_sticker_receiver_attached") is not None:
-            logger.info("WeChat sticker receiver observed a response to the image-augmented turn")
+    async def convert_messages(self):
+        while True:
+            thread, message_id = await self.queue.get()
+            try:
+                async with asyncio.timeout(self.wait):
+                    await self.convert_message(thread, message_id)
+            except ProbeError as error:
+                logger.info("WeChat sticker receiver skipped media (%s)", error)
+            except (aiohttp.ClientError, OSError, ValueError, PillowImage.DecompressionBombError) as error:
+                logger.info("WeChat sticker receiver skipped media (%s)", type(error).__name__)
+            finally:
+                self.queue.task_done()

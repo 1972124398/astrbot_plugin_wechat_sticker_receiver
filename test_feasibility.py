@@ -1,37 +1,28 @@
 from io import BytesIO
+from pathlib import Path
+import sys
 import unittest
 
 from PIL import Image
 
-from association import matches_session, previous_sticker
-from probe_native import ProbeError, endpoint, event_candidates
-from render_sticker import render
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from astrbot_plugin_wechat_sticker_receiver.native_events import private_session, sticker_timestamp
+from astrbot_plugin_wechat_sticker_receiver.probe_native import ProbeError, endpoint, event_candidates
+from astrbot_plugin_wechat_sticker_receiver.render_sticker import render
 
 
 class FeasibilityTests(unittest.TestCase):
-    def test_group_session_matches_only_account_thread_and_optional_sender(self):
-        self.assertTrue(matches_session("a|group|g%40chatroom", "a", "g@chatroom", "s"))
-        self.assertTrue(matches_session("a|group|g%40chatroom|s", "a", "g@chatroom", "s"))
-        self.assertFalse(matches_session("a|group|g%40chatroom|t", "a", "g@chatroom", "s"))
-        self.assertFalse(matches_session("b|group|g%40chatroom", "a", "g@chatroom", "s"))
-        self.assertFalse(matches_session("a|private|s|t", "a", "s", "s"))
+    def test_private_session_matches_adapter_encoding(self):
+        self.assertEqual(private_session("test/a", "peer:b"), "test%2Fa|private|peer%3Ab")
 
-    def test_native_history_is_anchored_and_separated_per_group_sender(self):
-        question = {
-            "accountId": "a", "threadId": "g@chatroom", "senderId": "s",
-            "direction": "incoming", "type": 1, "id": "question",
-            "createdAt": "2026-11-22T01:00:12Z",
-        }
-        sticker = {**question, "type": 49, "appMessageType": 8, "id": "sticker",
-                   "createdAt": "2026-11-22T01:00:11Z"}
-        other = {**sticker, "senderId": "t", "id": "other"}
-        future = {**sticker, "id": "later", "createdAt": "2026-11-22T01:00:13Z"}
-        self.assertEqual(previous_sticker([future, question, other, sticker], question, 120), "sticker")
-        self.assertIsNone(previous_sticker([question, other], question, 120))
-        self.assertIsNone(previous_sticker([other, sticker], question, 120))
-        self.assertIsNone(previous_sticker([question, {**sticker, "recall": {} }], question, 120))
-        intervening_text = {**sticker, "type": 1, "id": "already used"}
-        self.assertIsNone(previous_sticker([question, intervening_text, sticker], question, 120))
+    def test_only_native_sticker_types_with_timezone_are_accepted(self):
+        raw = {"type": 47, "createdAt": "2026-11-22T01:00:12Z"}
+        timestamp = sticker_timestamp(raw)
+        self.assertIsInstance(timestamp, int)
+        self.assertEqual(sticker_timestamp({**raw, "type": 49, "appMessageType": 8}), timestamp)
+        self.assertIsNone(sticker_timestamp({**raw, "type": 49, "appMessageType": 57}))
+        self.assertIsNone(sticker_timestamp({**raw, "type": 1}))
+        self.assertIsNone(sticker_timestamp({**raw, "createdAt": "2026-11-22T01:00:12"}))
 
     def test_native_path_is_loopback_and_account_is_encoded(self):
         self.assertEqual(
