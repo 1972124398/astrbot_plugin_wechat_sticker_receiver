@@ -1,0 +1,8 @@
+{
+  "native_origin": {"description": "本机 Native 地址", "type": "string", "default": "http://127.0.0.1:6174"},
+  "account_id": {"description": "Native 账号 ID", "type": "string", "default": ""},
+  "platform_id": {"description": "AstrBot WeChat Native 平台实例 ID", "type": "string", "default": ""},
+  "token_file": {"description": "Native read、media 令牌的绝对文件路径", "type": "string", "default": ""},
+  "private_peers": {"description": "允许读取表情的私聊微信 ID", "type": "list", "items": {"type": "string"}, "default": []},
+  "wait_ms": {"description": "读取和转换表情的超时（毫秒）", "type": "int", "default": 4500}
+}
