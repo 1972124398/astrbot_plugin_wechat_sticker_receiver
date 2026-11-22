@@ -12,9 +12,11 @@ import aiohttp
 from PIL import Image as PillowImage
 
 from astrbot.api import logger
+from astrbot.api.event import filter
 from astrbot.api.message_components import Image, Plain
 from astrbot.api.platform import AstrBotMessage, MessageMember, MessageType
 from astrbot.api.star import Star
+from astrbot.core.agent.message import TextPart
 
 from .native_events import cursor_number, latest_cursor, private_session, sticker_timestamp
 from .probe_native import (
@@ -32,7 +34,13 @@ from .render_sticker import render
 
 RECENT_EVENT_SECONDS = 120
 QUEUE_SIZE = 16
-STICKER_CONTEXT = "（微信表情包，用来传达聊天里的语气或情绪。请结合上下文自然接话，避免复述画面。）"
+STICKER_CONTEXT = "（微信表情包，供理解这段聊天的语气和情绪。）"
+STICKER_REPLY_GUIDANCE = (
+    "把微信表情包当作对方说话时的语气。根据对方正在聊的内容自然接话。"
+    "对方只发表情时，可以顺着情绪简短回应或接续上文。"
+    "发出回复前，删掉对表情画面、动作、外观、文字的提及或猜测。"
+)
+STICKER_TURN_REMINDER = "【本轮表情】只用来体会对方的情绪。直接接话，省略对画面和动作的说明或猜测。"
 
 
 def image_message(raw, account, own_username, timestamp, picture):
@@ -212,7 +220,9 @@ class WeChatStickerReceiver(Star):
             return
         message = image_message(raw, self.account, adapter.bot_self_id, timestamp, picture)
         try:
-            adapter.commit_event(adapter.create_event(message))
+            event = adapter.create_event(message)
+            event.set_extra("wechat_sticker_context", True)
+            adapter.commit_event(event)
         except asyncio.QueueFull:
             logger.info("WeChat sticker receiver skipped delivery while the AstrBot queue was full")
             return
@@ -234,3 +244,25 @@ class WeChatStickerReceiver(Star):
                 logger.info("WeChat sticker receiver skipped media (%s)", type(error).__name__)
             finally:
                 self.queue.task_done()
+
+    @filter.on_llm_request(priority=-50)
+    async def frame_sticker_context(self, event, request):
+        if (
+            self.client is None
+            or event.get_platform_name() != "wechat_native"
+            or event.get_platform_id() != self.platform
+            or event.get_group_id()
+            or event.get_sender_id() not in self.peers
+        ):
+            return
+        native_sticker = event.get_extra("wechat_sticker_context") is True
+        merged_sticker = STICKER_CONTEXT in (request.prompt or "") and bool(request.image_urls)
+        if native_sticker or merged_sticker:
+            system_prompt = request.system_prompt or ""
+            if not system_prompt.endswith(STICKER_REPLY_GUIDANCE):
+                request.system_prompt = (
+                    system_prompt + "\n\n" + STICKER_REPLY_GUIDANCE
+                    if system_prompt else STICKER_REPLY_GUIDANCE
+                )
+                request.extra_user_content_parts.append(TextPart(text=STICKER_TURN_REMINDER).mark_as_temp())
+                logger.info("WeChat sticker receiver added reply context for the sticker turn")
