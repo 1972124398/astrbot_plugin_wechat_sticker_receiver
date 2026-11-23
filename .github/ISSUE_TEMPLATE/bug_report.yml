@@ -1,0 +1,38 @@
+name: 使用问题与 Bug
+description: 反馈安装、配置或使用中遇到的问题。
+title: "[问题] "
+body:
+  - type: input
+    id: plugin_version
+    attributes:
+      label: 插件版本
+      placeholder: 请填写插件列表中显示的版本
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: 运行环境
+      description: 填写 AstrBot、Python、操作系统及相关模型或适配器版本。
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: 复现步骤
+      description: 说明如何安装、配置，以及怎样触发问题。
+    validations:
+      required: true
+  - type: textarea
+    id: behavior
+    attributes:
+      label: 预期与实际表现
+      description: 可以提供一段简短的操作或对话示例。
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: 相关日志
+      description: 可附上对应时间的日志，先隐藏令牌、账号和个人信息。
+      render: text

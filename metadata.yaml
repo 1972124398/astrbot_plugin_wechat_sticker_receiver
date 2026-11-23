@@ -1,7 +1,7 @@
 name: astrbot_plugin_wechat_sticker_receiver
 display_name: 微信原生表情转图片
 desc: 将入站微信原生表情转换为 AstrBot 的普通图片组件。
-version: 0.2.2
+version: 0.2.3
 author: AstrBot WeChat Sticker Receiver contributors
 category: utilities
 repo: https://github.com/1972124398/astrbot_plugin_wechat_sticker_receiver
