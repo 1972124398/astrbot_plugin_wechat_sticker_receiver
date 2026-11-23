@@ -13,7 +13,7 @@ from PIL import Image as PillowImage
 
 from astrbot.api import logger
 from astrbot.api.event import filter
-from astrbot.api.message_components import Image, Plain
+from astrbot.api.message_components import Image, Plain, Reply
 from astrbot.api.platform import AstrBotMessage, MessageMember, MessageType
 from astrbot.api.star import Star
 from astrbot.core.agent.message import TextPart
@@ -30,6 +30,9 @@ from .probe_native import (
     stream_events,
 )
 from .render_sticker import render
+from .quoted_sticker import (
+    check_quote, message_url, quoted_sticker, recheck_original, resolve_source,
+)
 
 
 RECENT_EVENT_SECONDS = 120
@@ -41,6 +44,20 @@ STICKER_REPLY_GUIDANCE = (
     "发出回复前，删掉对表情画面、动作、外观、文字的提及或猜测。"
 )
 STICKER_TURN_REMINDER = "【本轮表情】只用来体会对方的情绪。直接接话，省略对画面和动作的说明或猜测。"
+QUOTED_STICKER_CONTEXT = "（附图是当前消息引用的微信表情包，请结合本条文字理解。）"
+QUOTED_STICKER_GUIDANCE = (
+    "引用的微信表情包是当前文字的参考内容，不代表对方刚刚又发送了一次表情。"
+    "优先回应对方本条文字；对方明确询问表情含义或内容时，可以结合图片回答。"
+    "动图取样或静态预览不代表完整动画，不要猜测未展示的内容。"
+)
+
+
+def picture_note(note, picture):
+    if picture.preview:
+        return note + "（附图为静态预览。）"
+    if picture.sample_count > 1:
+        return note + "（附图为同一动图的顺序取样。）"
+    return note
 
 
 def image_message(raw, account, own_username, timestamp, picture):
@@ -50,11 +67,7 @@ def image_message(raw, account, own_username, timestamp, picture):
     message.session_id = private_session(account, raw["threadId"])
     message.message_id = raw["id"]
     message.sender = MessageMember(user_id=raw["senderId"], nickname=raw["senderId"])
-    note = STICKER_CONTEXT
-    if picture.preview:
-        note += "（附图为静态预览。）"
-    elif picture.sample_count > 1:
-        note += "（附图为同一动图的顺序取样。）"
+    note = picture_note(STICKER_CONTEXT, picture)
     message.message_str = note
     message.message = [Plain(note), Image.fromBytes(picture.png)]
     message.raw_message = raw
@@ -175,11 +188,13 @@ class WeChatStickerReceiver(Star):
             return None
         return adapter
 
-    async def download(self, url, message_id):
+    async def download(self, url, message_id, *, quoted=False):
         transfer_requested = False
         while True:
             try:
-                return await inspect_media(self.client, self.base, url, self.account, message_id, report=False)
+                return await inspect_media(
+                    self.client, self.base, url, self.account, message_id, report=False, quoted=quoted,
+                )
             except MediaPending as error:
                 if not transfer_requested:
                     async with self.client.post(
@@ -191,6 +206,77 @@ class WeChatStickerReceiver(Star):
                             raise NativeHTTPError("media transfer", response.status) from None
                     transfer_requested = True
                 await asyncio.sleep(0.2)
+
+    async def render_message(self, url, message_id, *, quoted=False):
+        blob, preview = await self.download(url, message_id, quoted=quoted)
+        return await asyncio.get_running_loop().run_in_executor(
+            self.decoder, partial(render, blob, preview=preview)
+        )
+
+    @filter.event_message_type(filter.EventMessageType.ALL, priority=100)
+    async def attach_quoted_sticker(self, event):
+        """Enrich the existing event before message merging and model input extraction."""
+        if (
+            self.client is None
+            or event.get_platform_name() != "wechat_native"
+            or event.get_platform_id() != self.platform
+            or event.get_group_id()
+            or event.get_sender_id() not in self.peers
+            or event.get_extra("wechat_quoted_sticker_context") is True
+        ):
+            return
+        raw = event.message_obj.raw_message
+        if not quoted_sticker(raw):
+            return
+        thread = event.get_sender_id()
+        adapter = self.eligible_adapter(thread, thread)
+        if (
+            adapter is None or raw.get("accountId") != self.account
+            or raw.get("threadId") != thread or raw.get("senderId") != thread
+            or raw.get("direction") != "incoming"
+            or not isinstance(raw.get("id"), str) or not raw["id"]
+            or raw["id"] != event.message_obj.message_id
+        ):
+            return
+        # Newer adapters can already supply a quoted sticker image.
+        if any(isinstance(part, Image) for part in event.get_messages()):
+            return
+        try:
+            async with asyncio.timeout(self.wait):
+                url = message_url(self.base, raw["id"])
+                current = await get_json(self.client, url, "quoted sticker message")
+                check_quote(current, raw)
+                state = getattr(adapter, "state", None)
+                source_id, embedded = await resolve_source(self.client, self.base, raw, state)
+                picture = await self.render_message(
+                    message_url(self.base, source_id), source_id, quoted=embedded,
+                )
+                current = await get_json(self.client, url, "quoted sticker validity")
+                check_quote(current, raw)
+                if state is not None and state.is_recalled(thread, raw["quote"].get("serverId")):
+                    raise ProbeError("quoted sticker recalled")
+                if not embedded:
+                    await recheck_original(self.client, self.base, raw, source_id, state)
+                if self.eligible_adapter(thread, thread) is not adapter:
+                    return
+        except (ProbeError, aiohttp.ClientError, OSError, ValueError, TimeoutError,
+                PillowImage.DecompressionBombError) as error:
+            logger.info("WeChat sticker receiver skipped quoted media (%s)", type(error).__name__)
+            return
+        note = picture_note(QUOTED_STICKER_CONTEXT, picture)
+        # Replace the adapter's unavailable placeholder, retaining the quote identity.
+        for part in event.get_messages():
+            if isinstance(part, Reply):
+                part.message_str = note
+                part.chain = [Plain(note)]
+        event.message_obj.message.extend([Plain(note), Image.fromBytes(picture.png)])
+        event.message_str = (event.get_message_str() or "") + "\n" + note
+        event.message_obj.message_str = event.message_str
+        event.set_extra("wechat_quoted_sticker_context", True)
+        logger.info(
+            "WeChat sticker receiver attached a quoted sticker image frames=%s preview=%s",
+            picture.sample_count, picture.preview,
+        )
 
     async def convert_message(self, thread, message_id):
         if message_id in self.seen or self.eligible_adapter(thread, thread) is None:
@@ -206,10 +292,7 @@ class WeChatStickerReceiver(Star):
         ):
             return
         logger.info("WeChat sticker receiver got an inbound sticker")
-        blob, preview = await self.download(url, message_id)
-        picture = await asyncio.get_running_loop().run_in_executor(
-            self.decoder, partial(render, blob, preview=preview)
-        )
+        picture = await self.render_message(url, message_id)
         current = await get_json(self.client, url, "sticker validity")
         adapter = self.eligible_adapter(thread, thread)
         identity_fields = ("accountId", "threadId", "senderId", "id", "serverId", "direction", "type", "appMessageType")
@@ -240,7 +323,7 @@ class WeChatStickerReceiver(Star):
                     await self.convert_message(thread, message_id)
             except ProbeError as error:
                 logger.info("WeChat sticker receiver skipped media (%s)", error)
-            except (aiohttp.ClientError, OSError, ValueError, PillowImage.DecompressionBombError) as error:
+            except (aiohttp.ClientError, OSError, ValueError, TimeoutError, PillowImage.DecompressionBombError) as error:
                 logger.info("WeChat sticker receiver skipped media (%s)", type(error).__name__)
             finally:
                 self.queue.task_done()
@@ -257,12 +340,17 @@ class WeChatStickerReceiver(Star):
             return
         native_sticker = event.get_extra("wechat_sticker_context") is True
         merged_sticker = STICKER_CONTEXT in (request.prompt or "") and bool(request.image_urls)
-        if native_sticker or merged_sticker:
+        quoted_context = event.get_extra("wechat_quoted_sticker_context") is True or (
+            QUOTED_STICKER_CONTEXT in (request.prompt or "") and bool(request.image_urls)
+        )
+        if native_sticker or merged_sticker or quoted_context:
+            guidance = QUOTED_STICKER_GUIDANCE if quoted_context else STICKER_REPLY_GUIDANCE
+            reminder = QUOTED_STICKER_CONTEXT if quoted_context else STICKER_TURN_REMINDER
             system_prompt = request.system_prompt or ""
-            if not system_prompt.endswith(STICKER_REPLY_GUIDANCE):
+            if not system_prompt.endswith(guidance):
                 request.system_prompt = (
-                    system_prompt + "\n\n" + STICKER_REPLY_GUIDANCE
-                    if system_prompt else STICKER_REPLY_GUIDANCE
+                    system_prompt + "\n\n" + guidance
+                    if system_prompt else guidance
                 )
-                request.extra_user_content_parts.append(TextPart(text=STICKER_TURN_REMINDER).mark_as_temp())
+                request.extra_user_content_parts.append(TextPart(text=reminder).mark_as_temp())
                 logger.info("WeChat sticker receiver added reply context for the sticker turn")

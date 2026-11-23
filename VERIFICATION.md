@@ -13,4 +13,10 @@
 
 分享表情、多联系人并行、普通图片现场回归和卸载回归仍待完整实测。当前插件面向允许名单中的私聊。
 
+## 0.3.0 本地验证
+
+在本机 Python 3.12 与已安装的 AstrBot 运行环境中，33 项自动测试通过。新增测试使用本地模拟 Native HTTP 服务及真实 AstrBot 消息组件，覆盖引用父消息的媒体路径、`source=quote` 与普通媒体隔离、预览、待下载状态、缺失引用的原表情查找、本人发出表情、跨会话拒绝、撤回检查、原事件补图与文字保留、已有图片去重、合并提示以及超时后工作任务继续运行。
+
+0.3.0 引用功能尚未完成真实微信端到端实测；上表中的旧版现场验证不代表引用场景已实测。仅安装基础依赖的 CI 会跳过 8 项需要 AstrBot 的事件集成测试。
+
 [Native HTTP API](https://thisnick.github.io/agent-wechat/use/api/) · [Native 消息类型](https://thisnick.github.io/agent-wechat/how-it-works/message-types/) · [AstrBot 事件参考](https://docs.astrbot.app/dev/star/guides/listen-message-event.html)

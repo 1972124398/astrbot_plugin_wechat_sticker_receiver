@@ -8,6 +8,10 @@
 
 单发表情即可进入转换。图片附带表情语境说明，预览和动图取样带有对应标记。本轮包含表情时，插件提醒模型体会语气和情绪，直接接话。现有唤醒、防抖、模型与回复流程处理后续输出。
 
+引用表情通过优先级为 100 的消息事件处理器，在防抖收集和模型图片提取之前补充图片，不再提交第二个事件。处理 `type=49 / appMessageType=57`，引用对象必须是受支持的表情。`state=embedded / embeddedSticker=true` 使用当前引用回复的消息 ID 读取 `source=quote` 媒体；`state=missing` 使用适配器保存的原消息 ID，或查询同一私聊最近 50 条消息，再校验账号、会话、发送者、serverId 和表情类型后读取原消息媒体。
+
+下载和转换后再次校验引用消息与原消息的身份及撤回状态。超时、撤回、找不到原表情等情况保留原文字输入。引用提示单独标记，消息合并后仍能应用“优先回应当前文字”的指导。Native 引用字段与父消息媒体规则见 [消息类型说明](https://thisnick.github.io/agent-wechat/how-it-works/message-types/#quotes)。
+
 ## 本地测试
 
 在仓库根目录、使用安装了依赖的 Python 运行。
@@ -16,6 +20,8 @@
 python -m pip install -r requirements.txt
 python -m unittest -v
 ```
+
+仅安装 `requirements.txt` 时运行媒体与引用来源测试；安装 AstrBot 的环境还会运行 `test_event_integration.py` 中的事件补图、去重、提示和超时恢复测试，未安装时明确标记为跳过。事件测试将 AstrBot 导入时产生的运行文件隔离到临时目录。
 
 ## 独立探针
 

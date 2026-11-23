@@ -149,7 +149,7 @@ async def inspect_asset(client, base, asset, metadata, preview, *, representatio
     return blob, preview
 
 
-async def inspect_media(client, base, message_url, account, message_id, *, report=True):
+async def inspect_media(client, base, message_url, account, message_id, *, report=True, quoted=False):
     result = await get_json(client, message_url + "/media", "media metadata")
     items = result.get("items")
     if not isinstance(items, list):
@@ -162,7 +162,7 @@ async def inspect_media(client, base, message_url, account, message_id, *, repor
             or asset.get("accountId") != account
             or asset.get("messageId") != message_id
             or asset.get("kind") != "sticker"
-            or asset.get("source") not in ("message", None)
+            or asset.get("source") not in (("quote", None) if quoted else ("message", None))
         ):
             continue
         state = asset.get("state")
