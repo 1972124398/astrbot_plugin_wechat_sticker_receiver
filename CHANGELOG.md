@@ -1,5 +1,7 @@
 # 更新记录
 
+[返回首页](README.md) · [发布版本](https://github.com/1972124398/astrbot_plugin_wechat_sticker_receiver/releases)
+
 ## 0.2.3
 
 - 补充安装前准备、配置字段、示例配置和三个 ID 的区别。

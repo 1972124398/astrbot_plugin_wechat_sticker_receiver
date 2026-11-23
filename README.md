@@ -1,66 +1,73 @@
-# AstrBot 微信原生表情转图片
+<div align="center">
 
-[![版本](https://img.shields.io/github/v/release/1972124398/astrbot_plugin_wechat_sticker_receiver)](https://github.com/1972124398/astrbot_plugin_wechat_sticker_receiver/releases/latest)
-[![许可证](https://img.shields.io/badge/license-0BSD-blue)](LICENSE)
+<h1>AstrBot 微信原生表情转图片</h1>
+<p>让 AI 看懂微信表情，接住聊天里的语气与情绪。</p>
 
-让 AstrBot 看懂微信私聊里收到的原生表情包，并结合正在聊的话题自然接话。
+<p>
+  <a href="https://github.com/1972124398/astrbot_plugin_wechat_sticker_receiver/releases/latest"><img src="https://img.shields.io/github/v/release/1972124398/astrbot_plugin_wechat_sticker_receiver?style=flat-square&color=2563eb" alt="最新版本"></a>
+  <a href="https://github.com/1972124398/astrbot_plugin_wechat_sticker_receiver/actions/workflows/test.yml"><img src="https://github.com/1972124398/astrbot_plugin_wechat_sticker_receiver/actions/workflows/test.yml/badge.svg?branch=main" alt="测试状态"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-0BSD-64748b?style=flat-square" alt="0BSD 许可证"></a>
+</p>
 
-静态表情转换成 PNG，动态表情转换成按时间顺序排列的代表帧拼图。转换后的图片沿用原会话、发送者和消息 ID，交给 AstrBot 现有的模型与回复流程处理。
+<p>
+  <a href="https://github.com/1972124398/astrbot_plugin_wechat_sticker_receiver/releases/latest/download/astrbot_plugin_wechat_sticker_receiver.zip"><strong>下载 ZIP</strong></a> ·
+  <a href="#快速开始">快速开始</a> ·
+  <a href="#配置说明">配置说明</a> ·
+  <a href="https://github.com/1972124398/astrbot_plugin_wechat_sticker_receiver/issues/new/choose">问题反馈</a>
+</p>
 
-[快速开始](#快速开始) · [配置说明](#配置说明) · [常见问题](docs/TROUBLESHOOTING.md) · [验证范围](VERIFICATION.md) · [更新记录](CHANGELOG.md)
+</div>
 
-## 可以做什么
+## 功能
 
-- 接收微信私聊中的静态表情和动态表情。
-- 将表情交给支持图片的模型，理解语气、情绪和上下文。
-- 与消息防抖插件配合，将连续的表情、文字放进同一段对话。
-- 提供表情语境提示，让模型接话时关注交流的意思。
-- 通过私聊允许名单选择需要处理的联系人。
-
-## 安装前准备
-
-| 项目 | 要求或已验证范围 |
+| 输入 | 处理方式 |
 | --- | --- |
-| AstrBot | `>=4.29.4,<5` |
-| Python | 已验证 3.12，使用 AstrBot 运行环境 |
-| 微信服务 | 已登录的 agent-wechat Native，已验证 2.7.1 |
-| 微信适配器 | 已接入 AstrBot 的 WeChat Native，已验证 0.3.21 |
-| 模型 | 支持图片输入 |
-| 处理范围 | 允许名单中的微信私聊 |
-| Native 地址 | 本机回环地址，例如 `http://127.0.0.1:6174` |
+| 静态原生表情 | 转换为 PNG 图片 |
+| 动态原生表情 | 转换为按时间顺序排列的代表帧拼图 |
+| 表情与连续文字 | 交给原会话流程，可配合消息防抖插件处理 |
+| 表情语境 | 提醒模型体会语气与情绪，自然接话 |
 
-先确认普通微信文字消息能够正常进入 AstrBot，再安装本插件。
-
-[agent-wechat](https://github.com/thisnick/agent-wechat) · [WeChat Native 适配器](https://github.com/neozhu/astrbot-plugin-wechat-native)
+转换后的图片沿用原会话、发送者和消息 ID。处理范围为允许名单中的微信私聊。
 
 ## 快速开始
 
-1. 在 AstrBot 插件管理中通过下面的仓库地址安装，或下载发布页的插件 ZIP 后从文件安装。
+先确认微信普通文字能够正常进入 AstrBot，并准备支持图片输入的模型。
+
+| 项目 | 要求或已验证范围 |
+| --- | --- |
+| AstrBot | `>=4.29.4,<5`，已验证 Python 3.12 |
+| 微信接入 | 已登录的 agent-wechat Native 与 WeChat Native 适配器 |
+| 已验证版本 | Native 2.7.1、微信适配器 0.3.21 |
+| 服务地址 | 本机回环地址，例如 `http://127.0.0.1:6174` |
+
+1. 在 AstrBot 插件管理中使用下方仓库地址安装，或下载 ZIP 后从文件安装。
 2. 打开 **插件 → 微信原生表情转图片 → 配置**。
-3. 填写本机 Native 地址、Native 账号 ID、AstrBot 平台实例 ID，以及令牌文件路径。
-4. 在 `private_peers` 中加入允许处理表情的私聊微信 ID。
-5. 保存并单独重载插件，然后在已加入名单的私聊里发送一张表情。
+3. 填写账号、平台实例、令牌文件和私聊允许名单。
+4. 保存并单独重载插件，在允许的私聊中发送一张表情。
 
 ```text
 https://github.com/1972124398/astrbot_plugin_wechat_sticker_receiver
 ```
 
-[下载安装包](https://github.com/1972124398/astrbot_plugin_wechat_sticker_receiver/releases/latest/download/astrbot_plugin_wechat_sticker_receiver.zip)
+[agent-wechat](https://github.com/thisnick/agent-wechat) · [WeChat Native 适配器](https://github.com/neozhu/astrbot-plugin-wechat-native)
 
 ## 配置说明
 
-| 字段 | 填写内容 | 默认值 |
-| --- | --- | --- |
-| `native_origin` | Native 服务所在的本机地址 | `http://127.0.0.1:6174` |
-| `account_id` | Native 账号 ID，可从 `wx accounts list` 查询 | 空 |
-| `platform_id` | AstrBot 中已创建的 WeChat Native 平台实例 ID | 空 |
-| `token_file` | 保存专用 Native 令牌的绝对文件路径 | 空 |
-| `private_peers` | 允许读取表情的私聊微信 ID 列表 | 空列表 |
-| `wait_ms` | 单张表情读取和转换的超时，单位毫秒 | `4500` |
+| 字段 | 填写内容 |
+| --- | --- |
+| `native_origin` | 本机 Native 地址，默认 `http://127.0.0.1:6174` |
+| `account_id` | Native 登录账号 ID，可通过 `wx accounts list` 查询 |
+| `platform_id` | AstrBot 中的 WeChat Native 平台实例 ID |
+| `token_file` | 专用 Native 令牌文件的绝对路径 |
+| `private_peers` | 允许处理表情的私聊联系人微信 ID 列表 |
+| `wait_ms` | 读取和转换超时，默认 `4500` 毫秒 |
 
-这三个 ID 分别标识 Native 登录账号、AstrBot 平台实例和聊天联系人，填写时对应各自的位置。允许名单为空时，插件等待配置完成。
+账号 ID、平台实例 ID 和联系人微信 ID 分别对应三个配置位置。允许名单默认为空，填齐配置后才会处理表情。
 
-例如下面的配置结构，示例 ID 与路径需要替换为实际值。
+<details>
+<summary><strong>查看配置示例</strong></summary>
+
+示例中的 ID 和路径需要替换为自己的实际值。
 
 ```json
 {
@@ -73,34 +80,66 @@ https://github.com/1972124398/astrbot_plugin_wechat_sticker_receiver
 }
 ```
 
-### 准备专用令牌
+</details>
 
-令牌需要对指定账号具有 `read` 和 `media` 权限。已配置 Native 管理访问的情况下，可按下面的命令结构创建。
+<details>
+<summary><strong>如何准备专用令牌？</strong></summary>
+
+令牌需要对指定账号具有 `read` 和 `media` 权限。配置好 Native 管理访问后，可以按下面的命令结构创建。
 
 ```shell
 wx tokens create sticker-reader --accounts ACCOUNT_ID --scopes read --scopes media
 ```
 
-将返回的令牌保存到一个文件，再把该文件的绝对路径填入 `token_file`。管理令牌文件和服务地址的参数，以 Native 的部署配置为准。
+将返回的令牌保存到文件，再把绝对路径填入 `token_file`。管理令牌文件和服务地址参数，以自己的 Native 部署配置为准。
 
 [Native 令牌说明](https://thisnick.github.io/agent-wechat/reference/tokens/)
 
-## 怎么确认生效
+</details>
 
-在允许名单中的私聊发送一张表情，再发送一句接续话题的文字。模型应收到转换后的图片，并根据现有的唤醒、防抖和回复规则接话。
+## 常见问题
 
-日志中的 `got an inbound sticker` 表示已经匹配到表情，`delivered a sticker image with context` 表示已交给 AstrBot。模型输出仍取决于图片能力、人设和其他提示词。
+<details>
+<summary>怎样确认插件已生效？</summary>
 
-[排错方法](docs/TROUBLESHOOTING.md) · [真实微信验证记录](VERIFICATION.md) · [开发与探针](docs/DEVELOPMENT.md)
+在允许名单中的私聊发送表情，再发送一句接续话题的文字。日志出现 `got an inbound sticker` 表示已匹配表情，出现 `delivered a sticker image with context` 表示已交给 AstrBot。
 
-## 问题反馈与相关插件
+后续由现有唤醒、防抖、模型与回复规则处理。模型输出取决于图片能力、人设和其他提示词。
 
-反馈时请提供 AstrBot、Native、微信适配器和本插件版本，以及表情类型、配置字段说明和相关日志。令牌文件的内容请保持私密。
+</details>
 
-[提交问题](https://github.com/1972124398/astrbot_plugin_wechat_sticker_receiver/issues/new/choose) · [更新记录](CHANGELOG.md)
+<details>
+<summary>安装后没有处理表情，或识别后没有回复</summary>
 
-可以配合 [短期共享情绪](https://github.com/1972124398/astrbot_plugin_short_term_mood) 使用。同一作者还维护 [Codex 任务桥接](https://github.com/1972124398/astrbot_plugin_codex_bridge)。
+检查普通文字链路、三个 ID、私聊名单、令牌权限及模型图片能力。完整日志含义和排错步骤见 [排错说明](docs/TROUBLESHOOTING.md)。
 
-## 许可证
+</details>
 
-采用 [0BSD](LICENSE)，允许使用、修改、分发和商用，无需保留署名。
+<details>
+<summary>Native 断连或返回 HTTP 500</summary>
+
+检查微信服务与账号状态。Windows 的文件归属问题及对应症状见 [运行环境排错](docs/TROUBLESHOOTING.md#windows-native-返回-http-500)。
+
+</details>
+
+## 文档与反馈
+
+| 文档 | 内容 |
+| --- | --- |
+| [排错说明](docs/TROUBLESHOOTING.md) | 配置检查、日志含义、启停与卸载 |
+| [验证记录](VERIFICATION.md) | 已完成的真实微信验证与范围 |
+| [开发与探针](docs/DEVELOPMENT.md) | 转换流程、本地测试和独立探针 |
+| [更新记录](CHANGELOG.md) | 版本变化与发布内容 |
+
+反馈时请提供 AstrBot、Native、微信适配器及插件版本，附上表情类型和相关日志，并隐藏令牌及个人信息。
+
+[提交问题](https://github.com/1972124398/astrbot_plugin_wechat_sticker_receiver/issues/new/choose) · [查看发布版本](https://github.com/1972124398/astrbot_plugin_wechat_sticker_receiver/releases)
+
+## 相关插件
+
+| 插件 | 用途 |
+| --- | --- |
+| [短期共享情绪](https://github.com/1972124398/astrbot_plugin_short_term_mood) | 让表情语气参与持续的短期心境 |
+| [Codex 任务桥接](https://github.com/1972124398/astrbot_plugin_codex_bridge) | 从私聊提交本机 Codex 后台任务 |
+
+采用 [0BSD 许可证](LICENSE)，允许使用、修改、分发和商用，无需保留署名。

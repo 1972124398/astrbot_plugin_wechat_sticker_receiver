@@ -1,5 +1,7 @@
 # 工作方式与开发验证
 
+[返回首页](../README.md) · [常见问题](TROUBLESHOOTING.md) · [更新记录](../CHANGELOG.md)
+
 插件使用独立的 Native SSE 连接监听新消息，以原消息 ID 读取 `type=47` 或 `type=49 / appMessageType=8` 的媒体，再转换为图片。
 
 媒体从 Native 的认证接口获取。插件使用已安装适配器的 `create_event` 和 AstrBot 的 `commit_event` 提交图片输入，每张表情的转换都有字节、时间和解码预算。
